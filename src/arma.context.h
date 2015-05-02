@@ -26,6 +26,10 @@
 
 enum armaT { doubleT, vecT, matT, intT, ivecT, imatT };
 
+// R-compatible arma based vectors and matrices
+using ivec = arma::Col<int>;
+using imat = arma::Mat<int>;
+
 class ArmaContext {
   armaT armatype_;
 public:
@@ -39,8 +43,8 @@ public:
 
   // int types
   virtual int& getInt() { throw std::logic_error("ERROR: Arma type conversion not supported."); }
-  virtual arma::ivec& getiVec() { throw std::logic_error("ERROR: Arma type conversion not supported."); }
-  virtual arma::imat& getiMat() { throw std::logic_error("ERROR: Arma type conversion not supported."); }
+  virtual ivec& getiVec() { throw std::logic_error("ERROR: Arma type conversion not supported."); }
+  virtual imat& getiMat() { throw std::logic_error("ERROR: Arma type conversion not supported."); }
 
   //virtual void print() const = 0;
 };
@@ -84,19 +88,19 @@ public:
 
 class ArmaiVec : public ArmaContext {
 private:
-  arma::ivec x_;
+  ivec x_;
 public:
-  ArmaiVec(SEXP x_sexp): ArmaContext(ivecT), x_(arma::ivec(INTEGER(x_sexp), Rf_length(x_sexp), false)) {}
-  arma::ivec& getiVec() { return x_; }
+  ArmaiVec(SEXP x_sexp): ArmaContext(ivecT), x_(ivec(INTEGER(x_sexp), Rf_length(x_sexp), false)) {}
+  ivec& getiVec() { return x_; }
   //void print() const { std::cout << x_ << std::endl; }
 };
 
 class ArmaiMat : public ArmaContext {
 private:
-  arma::imat x_;
+  imat x_;
 public:
-  ArmaiMat(SEXP x_sexp): ArmaContext(imatT), x_(arma::imat(INTEGER(x_sexp), Rf_nrows(x_sexp), Rf_ncols(x_sexp), false)) {}
-  arma::imat& getiMat() { return x_; }
+  ArmaiMat(SEXP x_sexp): ArmaContext(imatT), x_(imat(INTEGER(x_sexp), arma::uword(Rf_nrows(x_sexp)), arma::uword(Rf_ncols(x_sexp)), false)) {}
+  imat& getiMat() { return x_; }
   //void print() const { std::cout << x_ << std::endl; }
 };
 

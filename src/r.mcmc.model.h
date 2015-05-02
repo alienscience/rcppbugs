@@ -33,9 +33,10 @@ namespace cppbugs {
   private:
     double accepted_,rejected_,logp_value_,old_logp_value_;
     RNativeRng rng_;
-    std::vector<MCMCObject*> mcmcObjects_, dynamic_nodes, determinsitic_nodes;
-    std::vector<Likelihiood*> logp_functors;
-   
+    std::vector<MCMCObject*> mcmcObjects, jumping_nodes, dynamic_nodes, deterministic_nodes;
+    std::vector<Stochastic*> stochastic_nodes;
+    std::vector<MCMCTracked*> tracked_nodes;
+
     void jump() { for(size_t i = 0; i < dynamic_nodes.size(); i++) { dynamic_nodes[i]->jump(rng_); } }
     void jump_detrministics() { for(size_t i = 0; i < determinsitic_nodes.size(); i++) { determinsitic_nodes[i]->jump(rng_); } }
     void preserve() { for(size_t i = 0; i < dynamic_nodes.size(); i++) { dynamic_nodes[i]->preserve(); } }
@@ -45,28 +46,29 @@ namespace cppbugs {
     //void print() { for(auto v : mcmcObjects_) { v->print(); } }
     static bool bad_logp(const double value) { return std::isnan(value) || value == -std::numeric_limits<double>::infinity() ? true : false; }
 
-    void addStochcasticNode(MCMCObject* node) {
-      Stochastic* sp = dynamic_cast<Stochastic*>(node);
-      // FIXME: this should throw if sp->getLikelihoodFunctor() returns null
-      if(sp && sp->getLikelihoodFunctor() ) {
-        //std::cout << "adding stochastic" << std::endl;
-        logp_functors.push_back(sp->getLikelihoodFunctor());
-      }
     }
 
     void initChain() {
-      for(std::vector<MCMCObject*>::iterator node = mcmcObjects_.begin(); node != mcmcObjects_.end(); node++) {
-        // FIXME: add test here to check starting from invalid logp or NaN
-        addStochcasticNode(*node);
+      for(auto node = mcmcObjects_.begin(); node != mcmcObjects_.end(); node++) {
 
-        if((*node)->isDeterministc()) {
-          determinsitic_nodes.push_back(*node);
+        Stochastic* sp = dynamic_cast<Stochastic*>(node);
+        Observed<T>* op = dynamic_cast<Observed<T>* >(node);
+        Dynamic<T>* dp = dynamic_cast<Dynamic<T>* >(node);
+        Deterministic<T>* detp = dynamic_cast<Deterministic<T>* >(node);
+
+        if(sp) {
+          stochastic_nodes.push_back(sp);
+          if(sp->loglik()==-std::numeric_limits<double>::infinity()) {
+            throw std::logic_error("Cannot start from -Inf.");
+          }
         }
 
-        if(!(*node)->isObserved()) {
-          dynamic_nodes.push_back(*node);
-        }
+        // only jump stochastics which are not observed
+        if(sp && op == NULL) jumping_nodes.push_back(node);
+        if(dp) dynamic_nodes.push_back(node);
+        if(detp) deterministic_nodes.push_back(detp);
       }
+
       // init logp
       logp_value_ = logp();
     }
@@ -174,7 +176,7 @@ namespace cppbugs {
     double logp() const {
       double ans(0);
       //for(auto f : logp_functors) {
-      for(std::vector<Likelihiood*>::const_iterator it = logp_functors.begin(); it != logp_functors.end(); it++) {
+      for(std::vector<Likelihood*>::const_iterator it = logp_functors.begin(); it != logp_functors.end(); it++) {
         ans += (*it)->calc();
       }
       return ans;
