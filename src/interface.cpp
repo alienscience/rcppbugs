@@ -21,11 +21,7 @@
 #include <RcppArmadillo.h>
 #define NDEBUG
 #include <cppbugs/mcmc.deterministic.hpp>
-#include <cppbugs/distributions/mcmc.normal.hpp>
-#include <cppbugs/distributions/mcmc.uniform.hpp>
-#include <cppbugs/distributions/mcmc.gamma.hpp>
-#include <cppbugs/distributions/mcmc.beta.hpp>
-#include <cppbugs/distributions/mcmc.binomial.hpp>
+#include <cppbugs/mcmc.distributions.hpp>
 #include <cppbugs/distributions/mcmc.bernoulli.hpp>
 
 #include "helpers.h"
