@@ -40,8 +40,8 @@
 #include "logistic.deterministic.h"
 #include "r.mcmc.model.h"
 
-typedef std::map<void*,ArmaContext*> vpArmaMapT;
-typedef std::map<void*,cppbugs::MCMCObject*> vpMCMCMapT;
+using vpArmaMapT = std::map<void*,ArmaContext*>;
+using Model = MCModel<boost::minstd_rand>;
 
 // public interface
 extern "C" SEXP logp(SEXP x_,SEXP rho_);
@@ -50,16 +50,23 @@ extern "C" SEXP runModel(SEXP mp_, SEXP iterations, SEXP burn_in, SEXP adapt, SE
 
 // private methods
 cppbugs::MCMCObject* createMCMC(SEXP x, vpArmaMapT& armaMap);
-cppbugs::MCMCObject* createDeterministic(SEXP args_, vpArmaMapT& armaMap);
+
+template <typename T> void createDeterministic(Model& model, SEXP x, T& v);
+
 cppbugs::MCMCObject* createLinearDeterministic(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createLinearGroupedDeterministic(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createLogisticDeterministic(SEXP x_, vpArmaMapT& armaMap);
-cppbugs::MCMCObject* createNormal(SEXP x_, vpArmaMapT& armaMap);
+
+template <typename T> void createNormal(Model& model, SEXP x, T& v);
+
 cppbugs::MCMCObject* createUniform(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createGamma(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createBeta(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createBernoulli(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createBinomial(SEXP x_, vpArmaMapT& armaMap);
+
+// New private methods
+void linkNode(Model& model, SEXP x, vpArmaMapT& armaMap);
 
 ArmaContext* getArma(SEXP x);
 ArmaContext* mapOrFetch(SEXP x_, vpArmaMapT& armaMap);
@@ -233,7 +240,34 @@ SEXP createTrace(arglistT& arglist, vpArmaMapT& armaMap, vpMCMCMapT& mcmcMap) {
   return ans;
 }
 
-SEXP runModel(SEXP m_, SEXP iterations, SEXP burn_in, SEXP adapt, SEXP thin) {
+SEXP runModel(SEXP m_, SEXP iterations, SEXP burn_in, SEXP adapt, SEXP adapt_interval, SEXP thin) {
+
+  Model model;
+  vpArmaMapT armaMap;
+
+  initArgList(m_, arglist, 1);
+  for(size_t i = 0; i < arglist.size(); i++) {
+    linkNode(model, arglist[i], armaMap);
+    trackNode(model, arglist[i], armaMap);
+  }
+
+  int iterations_ = Rcpp::as<int>(iterations);
+  int burn_in_ = Rcpp::as<int>(burn_in);
+  int adapt_ = Rcpp::as<int>(adapt);
+  int adapt_interval_ = as<int>(adapt_interval);
+  int thin_ = Rcpp::as<int>(thin);
+  
+  model.tune(adapt_,adapt_interval_);
+  model.tune_global(adapt_,adapt_interval_);
+  model.burn(burn_);
+  model.sample(iterations_, thin_);
+
+  auto ret = createTrace(argList, armaMap);
+  releaseMap(armaMap);
+  return ret;
+
+#if 0
+  // OLD----
   const int eval_limit = 10;
 
   SEXP env_ = Rf_getAttrib(m_,Rf_install("env"));
@@ -294,6 +328,7 @@ SEXP runModel(SEXP m_, SEXP iterations, SEXP burn_in, SEXP adapt, SEXP thin) {
   Rf_setAttrib(ans, Rf_install("acceptance.ratio"), ar);
   UNPROTECT(2); // ans + ar
   return ans;
+#endif
 }
 
 ArmaContext* getArma(SEXP x_) {
@@ -330,6 +365,90 @@ ArmaContext* getArma(SEXP x_) {
   return ap;
 }
 
+class AddLinkVisitor : public ArmaContextVisitor {
+  Model& model_;
+  SEXP x_;
+
+  template <typename T>
+  void addLink(T& v) {
+    
+    SEXP distributed_sexp = Rf_getAttrib(x_,Rf_install("distributed"));
+    if(distributed_sexp == R_NilValue) {
+      throw std::logic_error("ERROR: 'distributed' attribute not defined. Is this an mcmc.object?");
+    }
+    
+    distT distributed = matchDistibution(std::string(CHAR(STRING_ELT(distributed_sexp,0))));
+    
+    switch(distributed) {
+    // deterministic types
+    case deterministicT:
+      createDeterministic(model_, x_, v);
+      break;
+    case linearDeterministicT:
+      createLinearDeterministic(model_, v);
+      break;
+    case linearGroupedDeterministicT:
+      createLinearGroupedDeterministic(model_, v);
+      break;
+    case logisticDeterministicT:
+      createLogisticDeterministic(model_, v);
+      break;
+    // continuous types
+    case normalDistT:
+      createNormal(model_, x_, v); 
+      break;
+    case uniformDistT:
+      createUniform(model_, v);
+      break;
+    case gammaDistT:
+      createGamma(model_, v);
+      break;
+    case betaDistT:
+      createBeta(model_, v);
+      break;
+    // discrete types
+    case bernoulliDistT:
+      createBernoulli(model, v);
+      break;
+    case binomialDistT:
+      createBinomial(x_,armaMap);
+      break;
+    default:
+      // not implemented
+      throw std::logic_error("ERROR: distribution not supported yet.");
+    }
+    
+  }
+  
+public:
+  AddLinkVisitor(Model& model, SEXP x) :
+    model_(model), x_(x) {}
+  
+  void visit(double& v) { addLink(v); }
+  void visit(arma::vec& v) { addLink(v); }
+  void visit(arma::mat& v) { addLink(v); }
+  void visit(int& v) { addLink(v); }
+  void visit(ivec& v) { addLink(v); }
+  void visit(imat& v) { addLink(v); }
+};
+
+
+void linkNode(Model& model, SEXP x, vpArmaMapT& armaMap) {
+
+  SEXP class_sexp = Rf_getAttrib(x_,R_ClassSymbol);
+  
+  if(class_sexp == R_NilValue || TYPEOF(class_sexp) != STRSXP ||
+     CHAR(STRING_ELT(class_sexp,0))==NULL ||
+     strcmp(CHAR(STRING_ELT(class_sexp,0)),"mcmc.object"))  {
+    throw std::logic_error("ERROR: class attribute not defined or not equal to 'mcmc.object'.");
+  }
+
+  // TODO: replace a visitor with something that handles multiple arguments
+  auto* parma = mapOrFetch(x_, armaMap);
+  AddLinkVisitor addLink(model, x_);
+  parma->apply(addLink);
+}
+
 cppbugs::MCMCObject* createMCMC(SEXP x_, vpArmaMapT& armaMap) {
   SEXP distributed_sexp;
   distributed_sexp = Rf_getAttrib(x_,Rf_install("distributed"));
@@ -349,6 +468,8 @@ cppbugs::MCMCObject* createMCMC(SEXP x_, vpArmaMapT& armaMap) {
   distT distributed = matchDistibution(std::string(CHAR(STRING_ELT(distributed_sexp,0))));
   cppbugs::MCMCObject* ans;
 
+  // OLD----
+  
   switch(distributed) {
     // deterministic types
   case deterministicT:
@@ -391,56 +512,28 @@ cppbugs::MCMCObject* createMCMC(SEXP x_, vpArmaMapT& armaMap) {
   return ans;
 }
 
-cppbugs::MCMCObject* createDeterministic(SEXP x_, vpArmaMapT& armaMap) {
-  SEXP args_;
-  cppbugs::MCMCObject* p;
-  ArmaContext* x_arma = armaMap[rawAddress(x_)];
-
+template <typename T>
+void createDeterministic(Model& model, SEXP x, T& v) {
+  
   // function should be in position 1 (excluding fun/call name)
-  SEXP fun_ = Rf_getAttrib(x_,Rf_install("update.method"));
-  if(fun_ == R_NilValue || (TYPEOF(fun_) != CLOSXP && TYPEOF(fun_) != BCODESXP)) {
+  SEXP fun = Rf_getAttrib(x,Rf_install("update.method"));
+  if(fun == R_NilValue || (TYPEOF(fun) != CLOSXP && TYPEOF(fun) != BCODESXP)) {
     throw std::logic_error("ERROR: update method must be a function.");
   }
 
-  SEXP env_ = Rf_getAttrib(x_,Rf_install("env"));
-  if(env_ == R_NilValue || TYPEOF(env_) != ENVSXP) {
+  SEXP env = Rf_getAttrib(x,Rf_install("env"));
+  if(env == R_NilValue || TYPEOF(env) != ENVSXP) {
     throw std::logic_error("ERROR: bad environment passed to deterministic.");
   }
-  SEXP call_ = Rf_getAttrib(x_,Rf_install("call"));
-  if(TYPEOF(call_) != LANGSXP) {
+  SEXP call = Rf_getAttrib(x,Rf_install("call"));
+  if(TYPEOF(call) != LANGSXP) {
     throw std::logic_error("ERROR: function arguments not LANGSXP.");
   }
-  if(Rf_length(call_) <= 2) {
+  if(Rf_length(call) <= 2) {
     throw std::logic_error("ERROR: function must have at least one argument.");
   }
 
-  // advance by 2
-  args_ = CDR(call_);
-  args_ = CDR(args_);
-
-  // map to arma types
-  try {
-    switch(x_arma->getArmaType()) {
-    case doubleT:
-      p = new cppbugs::RDeterministic<double>(x_arma->getDouble(),fun_,args_,env_);
-      break;
-    case vecT:
-      p = new cppbugs::RDeterministic<arma::vec>(x_arma->getVec(),fun_,args_,env_);
-      break;
-    case matT:
-      p = new cppbugs::RDeterministic<arma::mat>(x_arma->getMat(),fun_,args_,env_);
-      break;
-    case intT:
-    case ivecT:
-    case imatT:
-    default:
-      throw std::logic_error("ERROR: deterministic must be a continuous variable type (double, vec, or mat) for now (under development).");
-    }
-  } catch(std::logic_error &e) {
-    REprintf("%s\n",e.what());
-    return NULL;
-  }
-  return p;
+  model.link<RDeterministic>(v, fun, args, env);
 }
 
 cppbugs::MCMCObject* createLinearDeterministic(SEXP x_, vpArmaMapT& armaMap) {
@@ -598,32 +691,28 @@ cppbugs::MCMCObject* createLogisticDeterministic(SEXP x_, vpArmaMapT& armaMap) {
   return p;
 }
 
-cppbugs::MCMCObject* createNormal(SEXP x_,vpArmaMapT& armaMap) {
+template <typename T> void createNormal(Model& model, SEXP x, T& v) {
+  
   const int eval_limit = 10;
-  cppbugs::MCMCObject* p;
-  ArmaContext* x_arma = armaMap[rawAddress(x_)];
 
-  SEXP env_ = Rf_getAttrib(x_,Rf_install("env"));
-  SEXP mu_ = Rf_getAttrib(x_,Rf_install("mu"));
-  SEXP tau_ = Rf_getAttrib(x_,Rf_install("tau"));
+  SEXP env = Rf_getAttrib(x_,Rf_install("env"));
+  SEXP mu = Rf_getAttrib(x_,Rf_install("mu"));
+  SEXP tau = Rf_getAttrib(x_,Rf_install("tau"));
   SEXP observed_ = Rf_getAttrib(x_,Rf_install("observed"));
 
-  //Rprintf("typeof mu: %d\n",TYPEOF(mu_));
-
-  if(x_ == R_NilValue || env_ == R_NilValue || mu_ == R_NilValue || tau_ == R_NilValue || observed_ == R_NilValue) {
+  if(x == R_NilValue || env == R_NilValue || mu == R_NilValue || tau == R_NilValue || observed == R_NilValue) {
     throw std::logic_error("ERROR: createNormal, missing or null argument.");
   }
 
   // force substitutions
-  mu_ = forceEval(mu_, env_, eval_limit);
-  tau_ = forceEval(tau_, env_, eval_limit);
+  mu = forceEval(mu, env, eval_limit);
+  tau = forceEval(tau, env, eval_limit);
 
   bool observed = Rcpp::as<bool>(observed_);
 
-  // map to arma types
   ArmaContext* mu_arma = mapOrFetch(mu_, armaMap);
   ArmaContext* tau_arma = mapOrFetch(tau_, armaMap);
-
+  if 
   switch(x_arma->getArmaType()) {
   case doubleT:
     if(observed) {
