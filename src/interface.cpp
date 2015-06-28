@@ -1,3 +1,4 @@
+// -*- mode: C++; c-indent-level: 2; c-basic-offset: 2; tab-width: 8 -*-
 ///////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2011  Whit Armstrong                                    //
 //                                                                       //
@@ -48,6 +49,9 @@ extern "C" SEXP logp(SEXP x_,SEXP rho_);
 extern "C" SEXP createModel(SEXP args_sexp);
 extern "C" SEXP runModel(SEXP mp_, SEXP iterations, SEXP burn_in, SEXP adapt, SEXP thin);
 
+// Constants
+static const int kEvalLimit = 10;
+
 // private methods
 cppbugs::MCMCObject* createMCMC(SEXP x, vpArmaMapT& armaMap);
 
@@ -57,7 +61,7 @@ cppbugs::MCMCObject* createLinearDeterministic(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createLinearGroupedDeterministic(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createLogisticDeterministic(SEXP x_, vpArmaMapT& armaMap);
 
-template <typename T> void createNormal(Model& model, SEXP x, T& v);
+void createNormal(Model& model, SEXP x, vpArmaMapT& armaMap);
 
 cppbugs::MCMCObject* createUniform(SEXP x_, vpArmaMapT& armaMap);
 cppbugs::MCMCObject* createGamma(SEXP x_, vpArmaMapT& armaMap);
@@ -91,6 +95,17 @@ void initArgList(SEXP args, arglistT& arglist, const size_t skip) {
   for(; args != R_NilValue; args = CDR(args)) {
     arglist.push_back(CAR(args));
   }
+}
+
+
+SEXP getAttrib(SEXP x_, const char* name)
+{
+  SEXP ret = Rf_getAttrib(x_,Rf_install(name));
+
+  if(ret == R_NilValue) {
+    throw std::logic_error("ERROR: missing or null argument " + name);
+  }
+  return ret;
 }
 
 ArmaContext* mapOrFetch(SEXP x_, vpArmaMapT& armaMap) {
@@ -365,46 +380,49 @@ ArmaContext* getArma(SEXP x_) {
   return ap;
 }
 
-class AddLinkVisitor : public ArmaContextVisitor {
-  Model& model_;
-  SEXP x_;
+void linkNode(Model& model, SEXP x, vpArmaMapT& armaMap) {
 
-  template <typename T>
-  void addLink(T& v) {
+  SEXP class_sexp = Rf_getAttrib(x_,R_ClassSymbol);
+  
+  if(class_sexp == R_NilValue || TYPEOF(class_sexp) != STRSXP ||
+     CHAR(STRING_ELT(class_sexp,0))==NULL ||
+     strcmp(CHAR(STRING_ELT(class_sexp,0)),"mcmc.object"))  {
+    throw std::logic_error("ERROR: class attribute not defined or not equal to 'mcmc.object'.");
+  }
+
+  SEXP distributed_sexp = Rf_getAttrib(x_,Rf_install("distributed"));
+  if(distributed_sexp == R_NilValue) {
+    throw std::logic_error("ERROR: 'distributed' attribute not defined. Is this an mcmc.object?");
+  }
     
-    SEXP distributed_sexp = Rf_getAttrib(x_,Rf_install("distributed"));
-    if(distributed_sexp == R_NilValue) {
-      throw std::logic_error("ERROR: 'distributed' attribute not defined. Is this an mcmc.object?");
-    }
+  distT distributed = matchDistibution(std::string(CHAR(STRING_ELT(distributed_sexp,0))));
     
-    distT distributed = matchDistibution(std::string(CHAR(STRING_ELT(distributed_sexp,0))));
-    
-    switch(distributed) {
+  switch(distributed) {
     // deterministic types
     case deterministicT:
-      createDeterministic(model_, x_, v);
+      createDeterministic(model, x_, v);
       break;
     case linearDeterministicT:
-      createLinearDeterministic(model_, v);
+      createLinearDeterministic(model, v);
       break;
     case linearGroupedDeterministicT:
-      createLinearGroupedDeterministic(model_, v);
+      createLinearGroupedDeterministic(model, v);
       break;
     case logisticDeterministicT:
-      createLogisticDeterministic(model_, v);
+      createLogisticDeterministic(model, v);
       break;
     // continuous types
     case normalDistT:
-      createNormal(model_, x_, v); 
+      createNormal(model, x, armaMap); 
       break;
     case uniformDistT:
-      createUniform(model_, v);
+      createUniform(model, v);
       break;
     case gammaDistT:
-      createGamma(model_, v);
+      createGamma(model, v);
       break;
     case betaDistT:
-      createBeta(model_, v);
+      createBeta(model, v);
       break;
     // discrete types
     case bernoulliDistT:
@@ -416,37 +434,8 @@ class AddLinkVisitor : public ArmaContextVisitor {
     default:
       // not implemented
       throw std::logic_error("ERROR: distribution not supported yet.");
-    }
-    
   }
-  
-public:
-  AddLinkVisitor(Model& model, SEXP x) :
-    model_(model), x_(x) {}
-  
-  void visit(double& v) { addLink(v); }
-  void visit(arma::vec& v) { addLink(v); }
-  void visit(arma::mat& v) { addLink(v); }
-  void visit(int& v) { addLink(v); }
-  void visit(ivec& v) { addLink(v); }
-  void visit(imat& v) { addLink(v); }
-};
-
-
-void linkNode(Model& model, SEXP x, vpArmaMapT& armaMap) {
-
-  SEXP class_sexp = Rf_getAttrib(x_,R_ClassSymbol);
-  
-  if(class_sexp == R_NilValue || TYPEOF(class_sexp) != STRSXP ||
-     CHAR(STRING_ELT(class_sexp,0))==NULL ||
-     strcmp(CHAR(STRING_ELT(class_sexp,0)),"mcmc.object"))  {
-    throw std::logic_error("ERROR: class attribute not defined or not equal to 'mcmc.object'.");
-  }
-
-  // TODO: replace a visitor with something that handles multiple arguments
-  auto* parma = mapOrFetch(x_, armaMap);
-  AddLinkVisitor addLink(model, x_);
-  parma->apply(addLink);
+ 
 }
 
 cppbugs::MCMCObject* createMCMC(SEXP x_, vpArmaMapT& armaMap) {
@@ -691,57 +680,66 @@ cppbugs::MCMCObject* createLogisticDeterministic(SEXP x_, vpArmaMapT& armaMap) {
   return p;
 }
 
-template <typename T> void createNormal(Model& model, SEXP x, T& v) {
-  
-  const int eval_limit = 10;
 
-  SEXP env = Rf_getAttrib(x_,Rf_install("env"));
-  SEXP mu = Rf_getAttrib(x_,Rf_install("mu"));
-  SEXP tau = Rf_getAttrib(x_,Rf_install("tau"));
-  SEXP observed_ = Rf_getAttrib(x_,Rf_install("observed"));
+template <class T> 
+auto multiMethod(T& fn_class) 
+  -> decltype(multi::method<double,arma::vec,arma::mat,int,ivec,imat>(fn_class))
+{
+  return multi::method<double,arma::vec,arma::mat,int,ivec,imat>(fn_class);
+}
 
-  if(x == R_NilValue || env == R_NilValue || mu == R_NilValue || tau == R_NilValue || observed == R_NilValue) {
-    throw std::logic_error("ERROR: createNormal, missing or null argument.");
+// Calls the model link method in cppbugs
+template <class TDist>
+class ApplyLink
+{
+public:
+  ApplyLink(Model& model) : model_(model);
+
+  // Different apply functions for each arity
+
+  template <class T0, class T1>
+  void apply(T0 arg0, T1 arg1) {
+    model_.link<TDist>(arg0, arg1);
   }
+
+  template <class T0, class T1, class T2>
+  void apply(T0 arg0, T1 arg1, T2 arg2) {
+    model_.link<TDist>(arg0, arg1, arg2);
+  }
+
+private:
+  Model& model_;
+};
+
+void createNormal(Model& model, SEXP x, vpArmaMapT& armaMap) {
+  
+  SEXP env = getAttrib(x, "env");
+  SEXP mu = getAttrib(x, "mu");
+  SEXP tau = getAttrib(x,"tau");
+  SEXP observed = getAttrib(x,"observed");
 
   // force substitutions
-  mu = forceEval(mu, env, eval_limit);
-  tau = forceEval(tau, env, eval_limit);
+  mu = forceEval(mu, env, kEvalLimit);
+  tau = forceEval(tau, env, kEvalLimit);
 
-  bool observed = Rcpp::as<bool>(observed_);
+  bool is_observed = Rcpp::as<bool>(observed);
 
-  ArmaContext* mu_arma = mapOrFetch(mu_, armaMap);
-  ArmaContext* tau_arma = mapOrFetch(tau_, armaMap);
-  if 
-  switch(x_arma->getArmaType()) {
-  case doubleT:
-    if(observed) {
-      p = assignNormalLogp<cppbugs::ObservedNormal>(x_arma->getDouble(),mu_arma,tau_arma);
-    } else {
-      p = assignNormalLogp<cppbugs::Normal>(x_arma->getDouble(),mu_arma,tau_arma);
-    }
-    break;
-  case vecT:
-    if(observed) {
-      p = assignNormalLogp<cppbugs::ObservedNormal>(x_arma->getVec(),mu_arma,tau_arma);
-    } else {
-      p = assignNormalLogp<cppbugs::Normal>(x_arma->getVec(),mu_arma,tau_arma);
-    }
-    break;
-  case matT:
-    if(observed) {
-      p = assignNormalLogp<cppbugs::ObservedNormal>(x_arma->getMat(),mu_arma,tau_arma);
-    } else {
-      p = assignNormalLogp<cppbugs::Normal>(x_arma->getMat(),mu_arma,tau_arma);
-    }
-    break;
-  case intT:
-  case ivecT:
-  case imatT:
-  default:
-    throw std::logic_error("ERROR: normal must be a continuous variable type (double, vec, or mat).");
+  ArmaContext* mu_arma = mapOrFetch(mu, armaMap);
+  ArmaContext* tau_arma = mapOrFetch(tau, armaMap);
+
+  if (is_observed) {
+    ApplyLink<cppbugs::ObservedNormal> link(model);
+    auto args = multiMethod(link); // Typedef function template
+    mu_arma.accept(args);  // Add arguments using visitor
+    tau_arma.accept(args); // Add arguments using visitor
+    args.apply();          // m.link<cppbugs::ObservedNormal>(model, mu_arma, tau_arma);
+  } else {
+    ApplyLink<cppbugs::Normal> link(model);
+    auto args = multiMethod(link); // Typedef function template
+    mu_arma.accept(args);  // Add arguments using visitor
+    tau_arma.accept(args); // Add arguments using visitor
+    args.apply();          // m.link<cppbugs::Normal>(model, mu_arma, tau_arma);
   }
-  return p;
 }
 
 cppbugs::MCMCObject* createUniform(SEXP x_,vpArmaMapT& armaMap) {

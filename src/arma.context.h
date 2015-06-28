@@ -48,7 +48,7 @@ public:
   void apply(ArmaContextVisitor& visitor) = 0;
 };
  
-lass ArmaDouble : public ArmaContext {
+class ArmaDouble : public ArmaContext {
 private:
   double& x_;
 public:
